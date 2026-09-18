@@ -206,6 +206,7 @@ export async function deliver(mail: NormalizedMail): Promise<DeliveryResult> {
       mailbox,
       to: [mail.from.email],
       cc: [],
+      bcc: [],
       subject: mailbox.autoReplySubject?.trim() || `Re: ${mail.subject}`,
       bodyText: mailbox.autoReplyBody,
       inReplyTo: message.messageId,
@@ -290,6 +291,7 @@ async function sendOutbound(opts: {
   mailbox: OutboundMailbox;
   to: string[];
   cc: string[];
+  bcc: string[];
   subject: string;
   bodyText: string;
   inReplyTo: string | null;
@@ -313,6 +315,7 @@ async function sendOutbound(opts: {
     from: { name: opts.mailbox.displayName, email: opts.mailbox.address },
     to: opts.to,
     cc: opts.cc,
+    bcc: opts.bcc,
     subject: opts.subject,
     html,
     text: opts.bodyText + (opts.mailbox.signature ? `\n\n${opts.mailbox.signature}` : ''),
@@ -335,6 +338,7 @@ async function sendOutbound(opts: {
       fromEmail: opts.mailbox.address,
       toEmails: opts.to,
       ccEmails: opts.cc,
+      bccEmails: opts.bcc,
       subject: opts.subject.slice(0, 500),
       text: opts.bodyText,
       html,
@@ -376,6 +380,7 @@ export async function reply(
   bodyText: string,
   cc?: string[],
   attachments?: Attachment[],
+  bcc?: string[],
 ) {
   const scoped = await threadInScope(threadId, access);
   if (!scoped) return { error: 'notfound' as const };
@@ -399,6 +404,7 @@ export async function reply(
     mailbox: thread.mailbox,
     to: [thread.participant],
     cc: cc ?? [],
+    bcc: bcc ?? [],
     subject: /^re:/i.test(thread.subject) ? thread.subject : `Re: ${thread.subject}`,
     bodyText,
     inReplyTo: last?.messageId ?? null,
@@ -416,6 +422,7 @@ export async function compose(input: {
   access: MailAccess;
   to: string[];
   cc?: string[];
+  bcc?: string[];
   subject: string;
   body: string;
   attachments?: Attachment[];
@@ -446,6 +453,7 @@ export async function compose(input: {
     mailbox,
     to: input.to,
     cc: input.cc ?? [],
+    bcc: input.bcc ?? [],
     subject: input.subject,
     bodyText: input.body,
     inReplyTo: null,

@@ -7,10 +7,13 @@ import { AdminPanel } from '@/components/AdminPanel';
 import { ProfileDialog } from '@/components/ProfileDialog';
 import type { Me, Mailbox, ThreadSummary, ThreadDetail, Counts, Staff, Attachment } from '@/lib/types';
 import { api, formatWhen, formatBytes, initialsOf } from '@/lib/client';
+import { useLive } from '@/lib/live';
 
-const VIEWS: { key: string; label: string; icon: IconName }[] = [
+const VIEWS: { key: string; label: string; icon: IconName; noCount?: boolean }[] = [
   { key: 'inbox', label: 'Inbox', icon: 'inbox' },
-  { key: 'sent', label: 'Sent', icon: 'send' },
+  // Sent always shows, never counts: it is a record of what has gone out, not a
+  // queue of things waiting, so a number on it only ever grows and means nothing.
+  { key: 'sent', label: 'Sent', icon: 'send', noCount: true },
   { key: 'starred', label: 'Starred', icon: 'star' },
   { key: 'archived', label: 'Archived', icon: 'archive' },
   { key: 'spam', label: 'Spam', icon: 'shield' },
@@ -87,6 +90,25 @@ export function MailClient({ me }: { me: Me }) {
     void loadThreads();
     void loadShell();
   }, [loadThreads, loadShell]);
+
+  /**
+   * New mail appears on its own. The list and the folder counts refresh; an open
+   * conversation is deliberately left alone, since replacing what somebody is
+   * reading mid-sentence is worse than showing it a few seconds late.
+   */
+  const refreshQuietly = useCallback(async () => {
+    const [data, c] = await Promise.all([
+      api<{ items: ThreadSummary[]; total: number }>(`/api/threads?${query}`),
+      api<Counts>('/api/counts'),
+    ]);
+    if (data) {
+      setThreads(data.items);
+      setTotal(data.total);
+    }
+    if (c) setCounts(c);
+  }, [query]);
+
+  useLive(refreshQuietly);
 
   async function signOut() {
     await fetch('/api/auth/logout', { method: 'POST' });
@@ -198,7 +220,7 @@ export function MailClient({ me }: { me: Me }) {
 
           <nav className="space-y-0.5" aria-label="Folders">
             {VIEWS.map((v) => {
-              const badge = badgeFor(v.key);
+              const badge = v.noCount ? undefined : badgeFor(v.key);
               const active = view === v.key;
               return (
                 <button
@@ -449,6 +471,11 @@ function ThreadView({
   const [thread, setThread] = useState<ThreadDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [reply, setReply] = useState('');
+  const [cc, setCc] = useState('');
+  const [bcc, setBcc] = useState('');
+  // Hidden until wanted: most replies go to one person, and two empty boxes
+  // above every reply is clutter that gets scrolled past.
+  const [showCopies, setShowCopies] = useState(false);
   const [files, setFiles] = useState<Attachment[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
@@ -492,13 +519,21 @@ function ThreadView({
     const res = await fetch(`/api/threads/${threadId}/reply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body: reply, attachments: files.length ? files : undefined }),
+      body: JSON.stringify({
+        body: reply,
+        cc: cc.trim() || undefined,
+        bcc: bcc.trim() || undefined,
+        attachments: files.length ? files : undefined,
+      }),
     }).catch(() => null);
     const data = res ? await res.json().catch(() => null) : null;
     setSending(false);
 
     if (data?.sent) {
       setReply('');
+      setCc('');
+      setBcc('');
+      setShowCopies(false);
       setFiles([]);
       await load();
       onChanged();
@@ -606,9 +641,37 @@ function ThreadView({
           </p>
         ) : (
           <>
-            <label htmlFor="reply" className="mb-1.5 block text-xs font-semibold text-ink-soft">
-              Reply as {thread.mailbox.address}
-            </label>
+            <div className="mb-1.5 flex items-baseline justify-between gap-2">
+              <label htmlFor="reply" className="text-xs font-semibold text-ink-soft">
+                Reply as {thread.mailbox.address}
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowCopies((v) => !v)}
+                className="text-xs font-semibold text-crimson-700 hover:underline"
+              >
+                {showCopies ? 'Hide Cc and Bcc' : 'Cc and Bcc'}
+              </button>
+            </div>
+
+            {showCopies ? (
+              <div className="mb-2 grid gap-2 sm:grid-cols-2">
+                <input
+                  value={cc}
+                  onChange={(e) => setCc(e.target.value)}
+                  placeholder="Cc, separated by commas"
+                  aria-label="Cc"
+                  className="w-full rounded-xl border border-line bg-paper px-3 py-2 text-sm focus:border-crimson-500 focus:outline-none"
+                />
+                <input
+                  value={bcc}
+                  onChange={(e) => setBcc(e.target.value)}
+                  placeholder="Bcc, hidden from everyone"
+                  aria-label="Bcc"
+                  className="w-full rounded-xl border border-line bg-paper px-3 py-2 text-sm focus:border-crimson-500 focus:outline-none"
+                />
+              </div>
+            ) : null}
             <textarea
               id="reply"
               rows={4}
@@ -663,6 +726,7 @@ function MessageCard({ message }: { message: ThreadDetail['messages'][number] })
           <p className="truncate text-xs text-ink-muted">
             {message.fromEmail} to {message.toEmails.join(', ')}
             {message.ccEmails.length ? ` (cc ${message.ccEmails.join(', ')})` : ''}
+            {outbound && message.bccEmails?.length ? ` (bcc ${message.bccEmails.join(', ')})` : ''}
           </p>
         </div>
         <time className="shrink-0 text-xs text-ink-muted" dateTime={message.createdAt}>
@@ -861,6 +925,9 @@ function ComposeDialog({
 }) {
   const [mailboxId, setMailboxId] = useState(mailboxes[0]?.id ?? '');
   const [to, setTo] = useState('');
+  const [cc, setCc] = useState('');
+  const [bcc, setBcc] = useState('');
+  const [showCopies, setShowCopies] = useState(false);
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
   const [files, setFiles] = useState<Attachment[]>([]);
@@ -876,6 +943,8 @@ function ComposeDialog({
       body: JSON.stringify({
         mailboxId,
         to,
+        cc: cc.trim() || undefined,
+        bcc: bcc.trim() || undefined,
         subject,
         body,
         attachments: files.length ? files : undefined,
@@ -916,14 +985,44 @@ function ComposeDialog({
               ))}
             </select>
           </Field>
-          <Field label="To">
+          <div>
+            <div className="mb-1 flex items-baseline justify-between gap-2">
+              <label className="text-xs font-semibold text-ink-soft">To</label>
+              <button
+                type="button"
+                onClick={() => setShowCopies((v) => !v)}
+                className="text-xs font-semibold text-crimson-700 hover:underline"
+              >
+                {showCopies ? 'Hide Cc and Bcc' : 'Cc and Bcc'}
+              </button>
+            </div>
             <input
               value={to}
               onChange={(e) => setTo(e.target.value)}
               placeholder="parent@example.com, another@example.com"
               className="w-full rounded-xl border border-line px-3 py-2 text-sm focus:border-crimson-500 focus:outline-none"
             />
-          </Field>
+          </div>
+          {showCopies ? (
+            <>
+              <Field label="Cc" hint="Everyone can see these recipients.">
+                <input
+                  value={cc}
+                  onChange={(e) => setCc(e.target.value)}
+                  placeholder="someone@example.com"
+                  className="w-full rounded-xl border border-line px-3 py-2 text-sm focus:border-crimson-500 focus:outline-none"
+                />
+              </Field>
+              <Field label="Bcc" hint="Hidden from everyone, including each other.">
+                <input
+                  value={bcc}
+                  onChange={(e) => setBcc(e.target.value)}
+                  placeholder="someone@example.com"
+                  className="w-full rounded-xl border border-line px-3 py-2 text-sm focus:border-crimson-500 focus:outline-none"
+                />
+              </Field>
+            </>
+          ) : null}
           <Field label="Subject">
             <input
               value={subject}

@@ -169,6 +169,9 @@ model MailMessage {
   fromEmail String
   toEmails  String[] @default([])
   ccEmails  String[] @default([])
+  /// Kept so the record of what was sent is complete. Never shown to the
+  /// recipient, and only visible inside the portal.
+  bccEmails String[] @default([])
   subject   String
   text      String?  @db.Text
   html      String?  @db.Text

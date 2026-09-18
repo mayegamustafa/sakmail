@@ -71,6 +71,7 @@ export type MailMessageView = {
   fromEmail: string;
   toEmails: string[];
   ccEmails: string[];
+  bccEmails?: string[];
   subject: string;
   text?: string | null;
   html?: string | null;

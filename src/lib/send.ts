@@ -15,6 +15,7 @@ export type SendInput = {
   from: { name: string; email: string };
   to: string[];
   cc?: string[];
+  bcc?: string[];
   subject: string;
   html: string;
   text: string;
@@ -46,6 +47,7 @@ export async function sendMail(input: SendInput): Promise<SendResult> {
     sender: input.from,
     to: input.to.map((email) => ({ email })),
     cc: input.cc?.length ? input.cc.map((email) => ({ email })) : undefined,
+    bcc: input.bcc?.length ? input.bcc.map((email) => ({ email })) : undefined,
     subject: input.subject,
     htmlContent: input.html,
     textContent: input.text,

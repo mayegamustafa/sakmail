@@ -10,6 +10,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const body = (await req.json().catch(() => ({}))) as {
     body?: string;
     cc?: unknown;
+    bcc?: unknown;
     attachments?: unknown;
   };
   const text = typeof body.body === 'string' ? body.body.trim() : '';
@@ -22,6 +23,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     text.slice(0, 50_000),
     cleanRecipients(body.cc),
     cleanAttachments(body.attachments),
+    cleanRecipients(body.bcc),
   );
 
   if (result.error === 'notfound') {

@@ -21,6 +21,7 @@ export async function POST(req: Request) {
     access: await accessFor(user),
     to,
     cc: cleanRecipients(body.cc),
+    bcc: cleanRecipients(body.bcc),
     subject: subject.slice(0, 300),
     body: text.slice(0, 50_000),
     attachments: cleanAttachments(body.attachments),

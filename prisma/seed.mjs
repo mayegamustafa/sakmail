@@ -1,19 +1,18 @@
 import { PrismaClient } from '@prisma/client';
-import { randomBytes, scryptSync } from 'node:crypto';
-
 /**
- * Creates the first administrator and the school addresses.
+ * Creates the school addresses.
  *
- * Safe to run on every boot: everything is an upsert that leaves an existing
- * row alone, so a redeploy never resets a password or undoes a change made in
- * the admin screen.
+ * It deliberately does NOT create an administrator any more. A seeded password
+ * is only knowable if you happened to see the variable at the moment it first
+ * ran, and because the seed must never overwrite an existing password on a
+ * redeploy, setting that variable later changed nothing. The result was an
+ * account nobody could sign in to. The first administrator is now created at
+ * /setup, in a browser, by whoever opens the site first.
+ *
+ * Safe to run on every boot: every write is an upsert that leaves an existing
+ * row alone, so a redeploy never undoes a change made in the app.
  */
 const db = new PrismaClient();
-
-function hashPassword(password) {
-  const salt = randomBytes(16).toString('hex');
-  return `${salt}:${scryptSync(password, salt, 64).toString('hex')}`;
-}
 
 const DOMAIN = 'sirapollokaggwaschools.co.ug';
 
@@ -35,23 +34,6 @@ const ADDRESSES = [
 ];
 
 async function main() {
-  const email = (process.env.SEED_ADMIN_EMAIL ?? `admin@${DOMAIN}`).toLowerCase();
-  const password = process.env.SEED_ADMIN_PASSWORD ?? 'ChangeMe123!';
-
-  const admin = await db.user.upsert({
-    where: { email },
-    // Nothing on update: a redeploy must not reset the password.
-    update: {},
-    create: {
-      email,
-      passwordHash: hashPassword(password),
-      firstName: 'Schools',
-      lastName: 'Administrator',
-      role: 'ADMIN',
-    },
-  });
-  console.log(`admin: ${admin.email}`);
-
   let created = 0;
   for (const [local, displayName] of ADDRESSES) {
     const address = `${local}@${DOMAIN}`;
@@ -69,6 +51,13 @@ async function main() {
     created += 1;
   }
   console.log(`addresses: ${created} created, ${ADDRESSES.length - created} already there`);
+
+  const admins = await db.user.count({ where: { role: 'ADMIN', isActive: true } });
+  console.log(
+    admins === 0
+      ? 'no administrator yet: open /setup in a browser to create the first one'
+      : `administrators: ${admins}`,
+  );
 }
 
 main()

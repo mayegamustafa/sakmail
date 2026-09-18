@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon, type IconName } from '@/components/Icon';
 import { Logo } from '@/components/Logo';
 import { AdminPanel } from '@/components/AdminPanel';
+import { ProfileDialog } from '@/components/ProfileDialog';
 import type { Me, Mailbox, ThreadSummary, ThreadDetail, Counts, Staff, Attachment } from '@/lib/types';
 import { api, formatWhen, formatBytes, initialsOf } from '@/lib/client';
 
@@ -33,6 +34,8 @@ export function MailClient({ me }: { me: Me }) {
 
   const [composing, setComposing] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profile, setProfile] = useState(me);
   const [navOpen, setNavOpen] = useState(false);
 
   useEffect(() => {
@@ -144,12 +147,22 @@ export function MailClient({ me }: { me: Me }) {
               <Icon name="settings" />
             </button>
           ) : null}
-          <span
-            title={`${me.firstName} ${me.lastName}`}
-            className="ml-1 flex h-8 w-8 items-center justify-center rounded-full bg-crimson-500 text-xs font-semibold text-white"
+          <button
+            type="button"
+            onClick={() => setProfileOpen(true)}
+            title={`${profile.firstName} ${profile.lastName}, my account`}
+            aria-label="My account"
+            className="ml-1 rounded-full transition-opacity hover:opacity-80"
           >
-            {initialsOf(me.firstName, me.lastName)}
-          </span>
+            {profile.avatarUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={profile.avatarUrl} alt="" className="h-8 w-8 rounded-full object-cover" />
+            ) : (
+              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-crimson-500 text-xs font-semibold text-white">
+                {initialsOf(profile.firstName, profile.lastName)}
+              </span>
+            )}
+          </button>
           <button
             type="button"
             onClick={signOut}
@@ -391,6 +404,20 @@ export function MailClient({ me }: { me: Me }) {
           onSent={() => {
             setComposing(false);
             refresh();
+          }}
+        />
+      ) : null}
+
+      {profileOpen ? (
+        <ProfileDialog
+          me={profile}
+          onClose={() => setProfileOpen(false)}
+          onSaved={() => {
+            void fetch('/api/me')
+              .then((r) => (r.ok ? r.json() : null))
+              .then((fresh) => {
+                if (fresh) setProfile(fresh);
+              });
           }}
         />
       ) : null}

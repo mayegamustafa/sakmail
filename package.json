@@ -16,7 +16,8 @@
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "db:seed": "node --env-file-if-exists=.env prisma/seed.mjs",
-    "db:reset-admin": "node --env-file-if-exists=.env prisma/reset-admin.mjs"
+    "db:reset-admin": "node --env-file-if-exists=.env prisma/reset-admin.mjs",
+    "db:doctor": "node --env-file-if-exists=.env prisma/doctor.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.2.1",

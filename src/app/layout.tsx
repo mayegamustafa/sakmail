@@ -4,6 +4,7 @@ import './globals.css';
 export const metadata: Metadata = {
   title: { default: 'SAK Mail', template: '%s · SAK Mail' },
   description: 'Shared school email for Sir Apollo Kaggwa Schools.',
+  icons: { icon: '/sak.jpg', apple: '/sak.jpg' },
   robots: { index: false, follow: false },
 };
 

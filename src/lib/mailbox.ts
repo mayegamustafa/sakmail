@@ -240,12 +240,29 @@ function escapeHtml(value: string): string {
  * agrees on. Omitted entirely when there is no picture, so a plain reply stays
  * plain.
  */
+/**
+ * The picture to put on an outgoing message: the address's own if one was set,
+ * otherwise the schools' badge, so mail is recognisable by default rather than
+ * only when somebody remembers.
+ *
+ * Mail clients cannot resolve a relative path, so the badge is only usable once
+ * the public origin is known.
+ */
+function badgeFor(mailbox: OutboundMailbox): string | null {
+  if (mailbox.avatarUrl) return mailbox.avatarUrl;
+  const origin = (process.env.PUBLIC_URL ?? '').trim().replace(/\/+$/, '');
+  if (!origin) return null;
+  const base = /^https?:\/\//i.test(origin) ? origin : `https://${origin}`;
+  return `${base}/sak.jpg`;
+}
+
 function senderHeader(mailbox: OutboundMailbox): string {
-  if (!mailbox.avatarUrl) return '';
+  const badge = badgeFor(mailbox);
+  if (!badge) return '';
   return (
     `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px;border-collapse:collapse;">` +
     `<tr><td style="padding-right:12px;vertical-align:middle;">` +
-    `<img src="${escapeHtml(mailbox.avatarUrl)}" width="46" height="46" alt="" ` +
+    `<img src="${escapeHtml(badge)}" width="46" height="46" alt="" ` +
     `style="width:46px;height:46px;border-radius:23px;display:block;border:0;" /></td>` +
     `<td style="vertical-align:middle;">` +
     `<div style="font-size:15px;font-weight:bold;color:#A81433;line-height:1.3;">${escapeHtml(mailbox.displayName)}</div>` +

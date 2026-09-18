@@ -1,0 +1,95 @@
+@import 'tailwindcss';
+
+/*
+  Sir Apollo Kaggwa Schools.
+
+  Light and brand-led: logo crimson on white, charcoal for text. A dark shell was
+  rejected on the schools' decks as too heavy, and a mail client that staff sit in
+  all day has even less excuse for it.
+*/
+@theme {
+  --color-crimson-50: #fef2f4;
+  --color-crimson-100: #fde3e8;
+  --color-crimson-200: #fbccd6;
+  --color-crimson-300: #f8a5b7;
+  --color-crimson-400: #f26e8c;
+  --color-crimson-500: #ec375a;
+  --color-crimson-600: #d81f45;
+  --color-crimson-700: #a81433;
+  --color-crimson-800: #8a1029;
+  --color-crimson-900: #6d0d20;
+
+  --color-ink: #141c26;
+  --color-ink-soft: #414b57;
+  --color-ink-muted: #7b8591;
+
+  --color-paper: #ffffff;
+  --color-paper-soft: #f8f9fb;
+  --color-paper-dark: #eef1f5;
+  --color-line: #e2e6ec;
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+html,
+body {
+  background: var(--color-paper-soft);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+/* Focus that is visible without being loud, since this is a keyboard-heavy app. */
+:focus-visible {
+  outline: 2px solid var(--color-crimson-500);
+  outline-offset: 2px;
+}
+
+/* A scrollbar that does not fight the light shell. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+/* The body of a received message, which arrives as someone else's HTML. */
+.mail-body p {
+  margin: 0 0 0.9em;
+}
+.mail-body ul,
+.mail-body ol {
+  margin: 0 0 0.9em;
+  padding-left: 1.4em;
+}
+.mail-body ul {
+  list-style: disc;
+}
+.mail-body ol {
+  list-style: decimal;
+}
+.mail-body blockquote {
+  margin: 1em 0;
+  padding-left: 0.9em;
+  border-left: 2px solid var(--color-line);
+  color: var(--color-ink-muted);
+}
+.mail-body a {
+  color: var(--color-crimson-700);
+  text-decoration: underline;
+}
+.mail-body img {
+  max-width: 100%;
+  height: auto;
+}

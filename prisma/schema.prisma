@@ -1,0 +1,218 @@
+// Sir Apollo Kaggwa Schools — shared school email.
+//
+// One address per campus or department, each worked by named people rather than
+// by a role, so the Kisaasi inbox is not readable by whoever happens to hold an
+// admin title.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  /// Manages addresses, staff and who may work where.
+  ADMIN
+  /// Works only in the addresses they have been given.
+  STAFF
+}
+
+enum MailDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MailThreadState {
+  OPEN
+  ARCHIVED
+  SPAM
+  TRASH
+}
+
+model User {
+  id           String  @id @default(cuid())
+  email        String  @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  phone        String?
+  avatarUrl    String?
+  role         Role    @default(STAFF)
+  isActive     Boolean @default(true)
+
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  sessions        Session[]
+  mailboxAccess   MailboxMember[]
+  assignedThreads MailThread[]    @relation("Assignee")
+  sentMail        MailMessage[]   @relation("Sender")
+
+  @@index([email])
+  @@map("users")
+}
+
+/// A signed-in browser. Stored so a session can be ended from the server, which
+/// a stateless token cannot do.
+model Session {
+  id        String   @id @default(cuid())
+  /// The cookie carries this; the row is the only place it is valid.
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userAgent String?
+  ip        String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+/// One school address: kisaasi@, nakasero@, admin@ and so on.
+model Mailbox {
+  id          String  @id @default(cuid())
+  address     String  @unique
+  /// The From name recipients see, for example "SAK Kisaasi".
+  displayName String
+  description String?
+  /// Shown at the top of every message this address sends.
+  avatarUrl   String?
+  /// Receives mail for any address on the domain nobody has created.
+  isCatchAll  Boolean @default(false)
+  isActive    Boolean @default(true)
+  sortOrder   Int     @default(0)
+
+  signature        String? @db.Text
+  autoReplyEnabled Boolean @default(false)
+  autoReplySubject String?
+  autoReplyBody    String? @db.Text
+
+  threads   MailThread[]
+  members   MailboxMember[]
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@map("mailboxes")
+}
+
+/// Who may work in which address. Access is granted, never assumed.
+model MailboxMember {
+  id        String  @id @default(cuid())
+  mailboxId String
+  mailbox   Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// May reply as this address, rather than only read it.
+  canSend Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  @@unique([mailboxId, userId])
+  @@index([userId])
+  @@map("mailbox_members")
+}
+
+model MailThread {
+  id        String  @id @default(cuid())
+  mailboxId String
+  mailbox   Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  subject String
+  /// Lowercased subject with Re:/Fwd: stripped, for matching a reply whose
+  /// client dropped the References header.
+  subjectKey      String
+  participant     String
+  participantName String?
+  snippet         String @db.Text
+
+  state          MailThreadState @default(OPEN)
+  isRead         Boolean         @default(false)
+  isStarred      Boolean         @default(false)
+  messageCount   Int             @default(0)
+  hasAttachments Boolean         @default(false)
+
+  assignedToId String?
+  assignedTo   User?   @relation("Assignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  lastMessageAt DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  messages MailMessage[]
+
+  @@index([mailboxId, state, lastMessageAt])
+  @@index([mailboxId, subjectKey, participant])
+  @@index([assignedToId])
+  @@map("mail_threads")
+}
+
+model MailMessage {
+  id       String     @id @default(cuid())
+  threadId String
+  thread   MailThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  direction MailDirection
+
+  /// Unique, so a provider retrying after a timeout cannot deliver twice.
+  messageId  String?  @unique
+  inReplyTo  String?
+  references String[] @default([])
+
+  fromName  String?
+  fromEmail String
+  toEmails  String[] @default([])
+  ccEmails  String[] @default([])
+  subject   String
+  text      String?  @db.Text
+  html      String?  @db.Text
+
+  spamScore Float?
+  isSpam    Boolean @default(false)
+  headers   Json?
+  sizeBytes Int?
+
+  sentById      String?
+  sentBy        User?   @relation("Sender", fields: [sentById], references: [id], onDelete: SetNull)
+  deliveryError String?
+
+  attachments MailAttachment[]
+  createdAt   DateTime         @default(now())
+
+  @@index([threadId, createdAt])
+  @@map("mail_messages")
+}
+
+model MailAttachment {
+  id        String      @id @default(cuid())
+  messageId String
+  message   MailMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  fileName  String
+  mimeType  String
+  sizeBytes Int
+  /// Null when storage was not configured when it arrived, so the message is
+  /// still kept rather than the delivery failing.
+  url        String?
+  contentId  String?
+  isInline   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([messageId])
+  @@map("mail_attachments")
+}
+
+/// Single-row settings, such as the inbound webhook secret.
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}

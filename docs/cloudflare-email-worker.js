@@ -22,6 +22,22 @@ const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 export default {
+  /**
+   * This Worker handles email, not web requests. Without this, opening its
+   * .workers.dev URL throws and Cloudflare shows "Error 1101: Worker threw
+   * exception", which looks like a broken deploy when nothing is wrong.
+   * Answering plainly is kinder than an error page.
+   */
+  async fetch() {
+    return new Response(
+      'Sir Apollo Kaggwa Schools mail Worker.\n\n' +
+        'This handles incoming email only and has nothing to serve over the web.\n' +
+        'If you are checking whether it works, send mail to an address routed here\n' +
+        'and look in the portal, not at this page.\n',
+      { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } },
+    );
+  },
+
   async email(message, env, ctx) {
     try {
       const raw = await streamToUint8(message.raw, message.rawSize);

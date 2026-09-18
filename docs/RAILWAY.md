@@ -57,6 +57,30 @@ Parents project already sits under that, this app and its database may fit insid
 the same allowance at no extra cost. Check the usage graph before assuming either
 way.
 
+## Locked out of the administrator account
+
+The seed never changes an existing password. That is deliberate, so a redeploy
+can never wipe somebody's credentials. It also means that if the first deploy ran
+before `SEED_ADMIN_PASSWORD` was set, the account exists with the **default**
+`ChangeMe123!`, and setting the variable afterwards changes nothing.
+
+Try `ChangeMe123!` first. If that fails, reset it explicitly.
+
+In Railway, open the app service, then the Deployments tab, and run a one-off
+command:
+
+```
+npm run db:reset-admin
+```
+
+It reads `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` from the service variables,
+sets that password, promotes the account to ADMIN, reactivates it, and ends every
+existing session. Then sign in and change the password inside the app.
+
+A 401 from `/api/auth/login` means the database was reached and the query ran,
+since that answer only comes after the lookup. A database problem would be a 500.
+So a 401 is always a wrong account or a wrong password, never a broken connection.
+
 ## After it is up
 
 Sign in, change the seeded password, then work through `docs/SETUP.md` for the

@@ -60,6 +60,7 @@ export type MailAttachmentView = {
   fileName: string;
   mimeType: string;
   sizeBytes: number;
+  storageKey?: string | null;
   url?: string | null;
   isInline: boolean;
 };
@@ -113,4 +114,11 @@ export type StaffAccount = Staff & {
   mailboxAccess?: { mailboxId: string }[];
 };
 
-export type Attachment = { fileName: string; url: string; mimeType?: string };
+/** A file waiting to go out: uploaded to storage, or an outside link. */
+export type Attachment = {
+  fileName: string;
+  attachmentId?: string;
+  url?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+};

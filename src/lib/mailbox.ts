@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { Prisma, type MailThreadState } from '@prisma/client';
 import { db } from '@/lib/db';
 import { sendMail, type Attachment } from '@/lib/send';
+
+/** What a caller asks to attach: a file already uploaded, or an outside link. */
+export type OutgoingAttachment =
+  | { attachmentId: string }
+  | { fileName: string; url: string; mimeType?: string };
 import { htmlToText, snippetOf, subjectKeyOf, type NormalizedMail } from '@/lib/mail-parse';
+import { getFile, putFile } from '@/lib/storage';
 import type { SessionUser } from '@/lib/auth';
 
 /** How far back a subject match may reach when a client drops its headers. */
@@ -163,6 +169,16 @@ export async function deliver(mail: NormalizedMail): Promise<DeliveryResult> {
     });
   }
 
+  // Uploaded first so the keys can be written with the message. A file that
+  // fails to store leaves a null key and is shown as unavailable; the message
+  // itself is never lost over an attachment.
+  const stored = await Promise.all(
+    mail.attachments.map(async (a) => ({
+      a,
+      key: await putFile(a.content, a.fileName, a.mimeType, 'inbound'),
+    })),
+  );
+
   const message = await db.mailMessage.create({
     data: {
       threadId: thread.id,
@@ -181,15 +197,13 @@ export async function deliver(mail: NormalizedMail): Promise<DeliveryResult> {
       isSpam: spam,
       headers: (mail.headers ?? undefined) as Prisma.InputJsonValue | undefined,
       sizeBytes: mail.sizeBytes ?? null,
-      attachments: mail.attachments.length
+      attachments: stored.length
         ? {
-            create: mail.attachments.map((a) => ({
+            create: stored.map(({ a, key }) => ({
               fileName: a.fileName.slice(0, 250),
               mimeType: a.mimeType.slice(0, 150),
               sizeBytes: a.content.length,
-              // Files are kept only when storage is wired up; the message
-              // itself must never be lost over an attachment.
-              url: null,
+              storageKey: key,
               contentId: a.contentId ?? null,
               isInline: a.isInline,
             })),
@@ -286,6 +300,50 @@ function bodyToHtml(text: string, mailbox: OutboundMailbox, quote?: string | nul
   return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:#141C26;">${senderHeader(mailbox)}${paragraphs}${sig}${quoted}</div>`;
 }
 
+/**
+ * Turns what the caller asked for into what the provider is given.
+ *
+ * Our own files go inline as base64 rather than as a URL, which is what lets the
+ * bucket stay private: nothing has to be publicly readable for the provider to
+ * fetch it. A file that cannot be read back is skipped rather than failing the
+ * send, since a message that goes without its attachment beats one that does not
+ * go at all.
+ */
+async function resolveAttachments(
+  wanted: OutgoingAttachment[] | undefined,
+  userId: string | null,
+): Promise<{ toSend: Attachment[]; claimIds: string[] }> {
+  if (!wanted?.length) return { toSend: [], claimIds: [] };
+
+  const toSend: Attachment[] = [];
+  const claimIds: string[] = [];
+
+  for (const item of wanted) {
+    if ('url' in item) {
+      toSend.push({ kind: 'link', fileName: item.fileName, url: item.url, mimeType: item.mimeType });
+      continue;
+    }
+    const row = await db.mailAttachment.findUnique({
+      where: { id: item.attachmentId },
+      select: { id: true, fileName: true, mimeType: true, storageKey: true, messageId: true, uploadedById: true },
+    });
+    // Only a file this person uploaded and has not already sent.
+    if (!row?.storageKey || row.messageId || (userId && row.uploadedById !== userId)) continue;
+
+    const file = await getFile(row.storageKey);
+    if (!file) continue;
+
+    toSend.push({
+      kind: 'stored',
+      fileName: row.fileName,
+      mimeType: row.mimeType,
+      content: Buffer.from(file.body).toString('base64'),
+    });
+    claimIds.push(row.id);
+  }
+  return { toSend, claimIds };
+}
+
 async function sendOutbound(opts: {
   threadId: string;
   mailbox: OutboundMailbox;
@@ -298,7 +356,7 @@ async function sendOutbound(opts: {
   references: string[];
   sentById: string | null;
   quote: string | null;
-  attachments?: Attachment[];
+  attachments?: OutgoingAttachment[];
 }) {
   const domain = opts.mailbox.address.split('@')[1] ?? 'localhost';
   const messageId = `<${randomUUID()}@${domain}>`;
@@ -306,6 +364,7 @@ async function sendOutbound(opts: {
     .filter((v, i, a) => v && a.indexOf(v) === i)
     .slice(-20);
 
+  const { toSend, claimIds } = await resolveAttachments(opts.attachments, opts.sentById);
   const html = bodyToHtml(opts.bodyText, opts.mailbox, opts.quote);
   const headers: Record<string, string> = {};
   if (opts.inReplyTo) headers['In-Reply-To'] = opts.inReplyTo;
@@ -322,7 +381,7 @@ async function sendOutbound(opts: {
     replyTo: opts.mailbox.address,
     messageId,
     headers,
-    attachments: opts.attachments,
+    attachments: toSend,
   });
 
   // Recorded either way, so the thread shows what was written and why it did
@@ -344,20 +403,39 @@ async function sendOutbound(opts: {
       html,
       sentById: opts.sentById,
       deliveryError: result.sent ? null : (result.error ?? 'Unknown send failure'),
-      attachments: opts.attachments?.length
+      // Only outside links are created here. Uploaded files already have a row,
+      // and are attached to this message below rather than duplicated.
+      attachments: opts.attachments?.some((a) => 'url' in a)
         ? {
-            create: opts.attachments.map((a) => ({
-              fileName: a.fileName.slice(0, 250),
-              mimeType: (a.mimeType ?? 'application/octet-stream').slice(0, 150),
-              sizeBytes: 0,
-              url: a.url,
-              isInline: false,
-            })),
+            create: opts.attachments
+              .filter((a): a is { fileName: string; url: string; mimeType?: string } => 'url' in a)
+              .map((a) => ({
+                fileName: a.fileName.slice(0, 250),
+                mimeType: (a.mimeType ?? 'application/octet-stream').slice(0, 150),
+                sizeBytes: 0,
+                url: a.url,
+                isInline: false,
+              })),
           }
         : undefined,
     },
     include: { attachments: true },
   });
+
+  // Claimed before the row is read back, or the reply that just went out would
+  // report having no attachments while the files sit correctly in storage.
+  let saved = stored;
+  if (claimIds.length) {
+    await db.mailAttachment.updateMany({
+      where: { id: { in: claimIds } },
+      data: { messageId: stored.id },
+    });
+    saved =
+      (await db.mailMessage.findUnique({
+        where: { id: stored.id },
+        include: { attachments: true },
+      })) ?? stored;
+  }
 
   await db.mailThread.update({
     where: { id: opts.threadId },
@@ -370,7 +448,7 @@ async function sendOutbound(opts: {
     },
   });
 
-  return { ...result, message: stored };
+  return { ...result, message: saved };
 }
 
 export async function reply(
@@ -379,7 +457,7 @@ export async function reply(
   access: MailAccess,
   bodyText: string,
   cc?: string[],
-  attachments?: Attachment[],
+  attachments?: OutgoingAttachment[],
   bcc?: string[],
 ) {
   const scoped = await threadInScope(threadId, access);
@@ -425,7 +503,7 @@ export async function compose(input: {
   bcc?: string[];
   subject: string;
   body: string;
-  attachments?: Attachment[];
+  attachments?: OutgoingAttachment[];
 }) {
   const mailbox = await db.mailbox.findUnique({ where: { id: input.mailboxId } });
   if (!mailbox) return { error: 'notfound' as const };

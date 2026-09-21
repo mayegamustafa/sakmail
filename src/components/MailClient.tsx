@@ -771,10 +771,10 @@ function MessageCard({ message }: { message: ThreadDetail['messages'][number] })
           {message.attachments
             .filter((a) => !a.isInline)
             .map((a) =>
-              a.url ? (
+              a.storageKey || a.url ? (
                 <a
                   key={a.id}
-                  href={a.url}
+                  href={a.storageKey ? `/api/attachments/${a.id}` : (a.url as string)}
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center gap-1.5 rounded-full border border-line bg-paper px-3 py-1.5 text-xs text-ink-soft hover:border-crimson-300 hover:text-crimson-700"
@@ -839,9 +839,35 @@ function AttachmentPicker({
   onChange: (next: Attachment[]) => void;
   disabled?: boolean;
 }) {
+  const fileRef = useRef<HTMLInputElement>(null);
   const [link, setLink] = useState('');
   const [linking, setLinking] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  async function pick(files: FileList | null) {
+    if (!files?.length) return;
+    setBusy(true);
+    setError('');
+    const added: Attachment[] = [];
+
+    for (const file of Array.from(files)) {
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch('/api/attachments', { method: 'POST', body: form }).catch(() => null);
+      if (res && res.ok) {
+        const row = (await res.json()) as { id: string; fileName: string; sizeBytes: number };
+        added.push({ attachmentId: row.id, fileName: row.fileName, sizeBytes: row.sizeBytes });
+      } else {
+        const data = res ? await res.json().catch(() => null) : null;
+        setError(data?.message ?? `Could not attach ${file.name}.`);
+      }
+    }
+
+    setBusy(false);
+    if (fileRef.current) fileRef.current.value = '';
+    if (added.length) onChange([...items, ...added]);
+  }
 
   function addLink() {
     const url = link.trim();
@@ -858,14 +884,25 @@ function AttachmentPicker({
 
   return (
     <div className="mt-2">
-      <button
-        type="button"
-        onClick={() => setLinking((v) => !v)}
-        disabled={disabled}
-        className="inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-xs font-medium text-ink-soft hover:border-crimson-300 hover:text-crimson-700 disabled:opacity-50"
-      >
-        <Icon name="link" size={13} /> Attach a link
-      </button>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          disabled={disabled || busy}
+          className="inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-xs font-medium text-ink-soft hover:border-crimson-300 hover:text-crimson-700 disabled:opacity-50"
+        >
+          <Icon name="paperclip" size={13} /> {busy ? 'Uploading' : 'Attach a file'}
+        </button>
+        <button
+          type="button"
+          onClick={() => setLinking((v) => !v)}
+          disabled={disabled}
+          className="inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-xs font-medium text-ink-soft hover:border-crimson-300 hover:text-crimson-700 disabled:opacity-50"
+        >
+          <Icon name="link" size={13} /> Attach a link
+        </button>
+        <input ref={fileRef} type="file" multiple hidden onChange={(e) => pick(e.target.files)} />
+      </div>
 
       {linking ? (
         <div className="mt-2 flex gap-2">
@@ -891,11 +928,12 @@ function AttachmentPicker({
         <ul className="mt-2 flex flex-wrap gap-1.5">
           {items.map((a, i) => (
             <li
-              key={`${a.url}-${i}`}
+              key={`${a.attachmentId ?? a.url}-${i}`}
               className="inline-flex items-center gap-1.5 rounded-full border border-line bg-paper-soft px-3 py-1.5 text-xs text-ink-soft"
             >
               <Icon name="paperclip" size={11} />
               <span className="max-w-[12rem] truncate">{a.fileName}</span>
+              {a.sizeBytes ? <span className="text-ink-muted">{formatBytes(a.sizeBytes)}</span> : null}
               <button
                 type="button"
                 onClick={() => onChange(items.filter((_, j) => j !== i))}

@@ -2,7 +2,7 @@
   "name": "sak-mail",
   "version": "0.1.0",
   "private": true,
-  "description": "Sir Apollo Kaggwa Schools \u2014 shared school email, delivered into a portal the schools own",
+  "description": "Sir Apollo Kaggwa Schools — shared school email, delivered into a portal the schools own",
   "engines": {
     "node": ">=20.0.0"
   },
@@ -20,6 +20,7 @@
     "db:doctor": "node --env-file-if-exists=.env prisma/doctor.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1136.0",
     "@prisma/client": "^6.2.1",
     "next": "^15.1.11",
     "react": "19.0.0",

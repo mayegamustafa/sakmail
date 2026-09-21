@@ -94,9 +94,32 @@ with the reason it did not leave, so nothing anyone types is lost.
 
 ## Attachments
 
-Incoming attachments are recorded by name and size. Storing the file itself needs
-object storage, which is not wired up yet, so they show as "not stored" rather
-than the delivery failing. Outgoing attachments work today by link.
+Files are kept on Cloudflare R2: 10GB free, and no charge for reading them back,
+which matters because a mailbox is read far more often than it is written.
+
+In the Cloudflare dashboard, R2, create a bucket. Then Manage API Tokens, create
+one with Object Read and Write on that bucket. Set four variables on the service:
+
+```
+R2_ACCOUNT_ID        from the R2 overview page
+R2_ACCESS_KEY_ID     from the token
+R2_SECRET_ACCESS_KEY from the token
+R2_BUCKET            the bucket name
+```
+
+**Leave the bucket private.** Nothing is served from it directly. Every file goes
+back out through `/api/attachments/<id>`, which checks that the reader may work
+in the address the message belongs to, the same check the conversation itself
+gets. An attachment on a school mailbox is as likely to be a medical form or a
+fee statement as a photograph, and a public bucket URL cannot be taken back once
+it leaks.
+
+Files sent out go inline rather than as a link, which is what lets the bucket
+stay private: the mail provider never needs to reach it.
+
+Without these variables nothing breaks. Mail still arrives and reads normally,
+and attachments are recorded by name and shown as not stored. An attachment must
+never cost the school the message it came with.
 
 ## How threading works
 

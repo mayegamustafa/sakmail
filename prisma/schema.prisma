@@ -51,6 +51,7 @@ model User {
   mailboxAccess   MailboxMember[]
   assignedThreads MailThread[]    @relation("Assignee")
   sentMail        MailMessage[]   @relation("Sender")
+  uploads         MailAttachment[] @relation("Uploader")
 
   @@index([email])
   @@map("users")
@@ -193,15 +194,24 @@ model MailMessage {
 }
 
 model MailAttachment {
-  id        String      @id @default(cuid())
-  messageId String
-  message   MailMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  id String @id @default(cuid())
+
+  /// Null while a file is uploaded but not yet sent. It is claimed by the reply
+  /// or the new message that goes out with it.
+  messageId String?
+  message   MailMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  /// Who uploaded it, for a file still waiting to be sent.
+  uploadedById String?
+  uploadedBy   User?   @relation("Uploader", fields: [uploadedById], references: [id], onDelete: SetNull)
 
   fileName  String
   mimeType  String
   sizeBytes Int
-  /// Null when storage was not configured when it arrived, so the message is
-  /// still kept rather than the delivery failing.
+  /// The object key in R2. Null when storage was not set up when it arrived, so
+  /// the message is still kept rather than the delivery failing.
+  storageKey String?
+  /// An outside link, for a file attached by URL rather than uploaded.
   url        String?
   contentId  String?
   isInline   Boolean  @default(false)

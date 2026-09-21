@@ -9,7 +9,14 @@
  * blocked.
  */
 
-export type Attachment = { fileName: string; url: string; mimeType?: string };
+/**
+ * A file going out: either one we hold in storage, sent inline, or an outside
+ * link the provider fetches itself. Ours go inline so the bucket can stay
+ * private and nothing needs a public URL.
+ */
+export type Attachment =
+  | { kind: 'stored'; fileName: string; content: string; mimeType?: string }
+  | { kind: 'link'; fileName: string; url: string; mimeType?: string };
 
 export type SendInput = {
   from: { name: string; email: string };
@@ -55,7 +62,11 @@ export async function sendMail(input: SendInput): Promise<SendResult> {
     headers: Object.keys(headers).length ? headers : undefined,
     // Brevo fetches each file itself, so nothing is buffered in this process.
     attachment: input.attachments?.length
-      ? input.attachments.map((a) => ({ url: a.url, name: a.fileName }))
+      ? input.attachments.map((a) =>
+          a.kind === 'stored'
+            ? { content: a.content, name: a.fileName }
+            : { url: a.url, name: a.fileName },
+        )
       : undefined,
   };
 

@@ -8,6 +8,7 @@ import { ProfileDialog } from '@/components/ProfileDialog';
 import type { Me, Mailbox, ThreadSummary, ThreadDetail, Counts, Staff, Attachment } from '@/lib/types';
 import { api, formatWhen, formatBytes, initialsOf } from '@/lib/client';
 import { useLive } from '@/lib/live';
+import { SwipeRow } from '@/components/SwipeRow';
 
 const VIEWS: { key: string; label: string; icon: IconName; noCount?: boolean }[] = [
   { key: 'inbox', label: 'Inbox', icon: 'inbox' },
@@ -35,6 +36,8 @@ export function MailClient({ me }: { me: Me }) {
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState<string | null>(null);
 
+  // Long press opens selection, the way a phone mail app does. Empty means off.
+  const [selected, setSelected] = useState<string[]>([]);
   const [composing, setComposing] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -90,6 +93,36 @@ export function MailClient({ me }: { me: Me }) {
     void loadThreads();
     void loadShell();
   }, [loadThreads, loadShell]);
+
+  /**
+   * Applies an action to one or many conversations.
+   *
+   * The rows disappear from the list immediately rather than after the round
+   * trip, because on a phone a swipe that leaves the row sitting there reads as
+   * having failed.
+   */
+  const act = useCallback(
+    async (ids: string[], change: Record<string, unknown> | 'delete') => {
+      if (!ids.length) return;
+      setThreads((prev) => prev.filter((t) => !ids.includes(t.id)));
+      setSelected([]);
+      if (openId && ids.includes(openId)) setOpenId(null);
+
+      await Promise.all(
+        ids.map((id) =>
+          change === 'delete'
+            ? api(`/api/threads/${id}`, { method: 'DELETE' })
+            : api(`/api/threads/${id}`, { method: 'PATCH', body: JSON.stringify(change) }),
+        ),
+      );
+      refresh();
+    },
+    [openId, refresh],
+  );
+
+  function toggleSelected(id: string) {
+    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
 
   /**
    * New mail appears on its own. The list and the folder counts refresh; an open
@@ -301,6 +334,71 @@ export function MailClient({ me }: { me: Me }) {
             openId ? 'hidden md:flex md:w-80 lg:w-96' : 'flex-1 md:w-80 md:flex-none lg:w-96',
           ].join(' ')}
         >
+          {selected.length ? (
+            <div className="flex items-center gap-1 border-b border-line bg-crimson-50 px-2 py-2">
+              <button
+                type="button"
+                onClick={() => setSelected([])}
+                aria-label="Cancel selection"
+                className="rounded-lg p-2 text-ink-soft hover:bg-white"
+              >
+                <Icon name="close" size={18} />
+              </button>
+              <span className="text-sm font-semibold text-crimson-800">{selected.length}</span>
+              <div className="ml-auto flex items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => act(selected, { isRead: true })}
+                  title="Mark read"
+                  aria-label="Mark read"
+                  className="rounded-lg p-2 text-ink-soft hover:bg-white"
+                >
+                  <Icon name="check" size={18} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => act(selected, { isStarred: true })}
+                  title="Star"
+                  aria-label="Star"
+                  className="rounded-lg p-2 text-ink-soft hover:bg-white"
+                >
+                  <Icon name="star" size={18} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => act(selected, { state: 'ARCHIVED' })}
+                  title="Archive"
+                  aria-label="Archive"
+                  className="rounded-lg p-2 text-ink-soft hover:bg-white"
+                >
+                  <Icon name="archive" size={18} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => act(selected, { state: 'SPAM' })}
+                  title="Mark spam"
+                  aria-label="Mark spam"
+                  className="rounded-lg p-2 text-ink-soft hover:bg-white"
+                >
+                  <Icon name="shield" size={18} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirm(`Delete ${selected.length} conversation${selected.length === 1 ? '' : 's'}? This cannot be undone.`)) {
+                      void act(selected, 'delete');
+                    }
+                  }}
+                  title="Delete"
+                  aria-label="Delete"
+                  className="rounded-lg p-2 text-ink-muted hover:bg-white hover:text-crimson-700"
+                >
+                  <Icon name="trash" size={18} />
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           <div className="border-b border-line p-2 sm:hidden">
             <div className="relative">
               <Icon name="search" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted" />
@@ -326,24 +424,48 @@ export function MailClient({ me }: { me: Me }) {
                     : 'No conversations here.'}
               </p>
             ) : (
+              <>
+              <p className="border-b border-line bg-paper-soft px-3 py-1.5 text-[11px] text-ink-muted md:hidden">
+                Swipe a conversation to archive or delete it. Hold one to select several.
+              </p>
               <ul>
                 {threads.map((t) => (
                   <li key={t.id}>
+                  <SwipeRow
+                    left={{ label: 'Archive', icon: 'archive', tone: 'positive' }}
+                    right={{ label: 'Delete', icon: 'trash', tone: 'danger' }}
+                    onLeft={() => act([t.id], { state: 'ARCHIVED' })}
+                    onRight={() => act([t.id], 'delete')}
+                    onHold={() => toggleSelected(t.id)}
+                    disabled={selected.length > 0}
+                  >
                     <button
                       type="button"
-                      onClick={() => setOpenId(t.id)}
+                      onClick={() => (selected.length ? toggleSelected(t.id) : setOpenId(t.id))}
                       className={[
                         'flex w-full gap-3 border-b border-line/70 px-3 py-3 text-left transition-colors',
-                        openId === t.id ? 'bg-crimson-50/60' : 'hover:bg-paper-soft',
+                        selected.includes(t.id)
+                          ? 'bg-crimson-50'
+                          : openId === t.id
+                            ? 'bg-crimson-50/60'
+                            : 'hover:bg-paper-soft',
                       ].join(' ')}
                     >
                       <span
                         className={[
                           'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold',
-                          t.isRead ? 'bg-paper-dark text-ink-soft' : 'bg-crimson-500 text-white',
+                          selected.includes(t.id)
+                            ? 'bg-crimson-600 text-white'
+                            : t.isRead
+                              ? 'bg-paper-dark text-ink-soft'
+                              : 'bg-crimson-500 text-white',
                         ].join(' ')}
                       >
-                        {initialsOf(t.participantName ?? t.participant)}
+                        {selected.includes(t.id) ? (
+                          <Icon name="check" size={16} />
+                        ) : (
+                          initialsOf(t.participantName ?? t.participant)
+                        )}
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="flex items-baseline justify-between gap-2">
@@ -385,9 +507,11 @@ export function MailClient({ me }: { me: Me }) {
                         </span>
                       </span>
                     </button>
-                  </li>
+                  </SwipeRow>
+                </li>
                 ))}
               </ul>
+              </>
             )}
           </div>
 

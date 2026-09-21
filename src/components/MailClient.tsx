@@ -9,6 +9,7 @@ import type { Me, Mailbox, ThreadSummary, ThreadDetail, Counts, Staff, Attachmen
 import { api, formatWhen, formatBytes, initialsOf } from '@/lib/client';
 import { useLive } from '@/lib/live';
 import { SwipeRow } from '@/components/SwipeRow';
+import { printDocument, sheetHead, escapeHtml } from '@/lib/print';
 
 const VIEWS: { key: string; label: string; icon: IconName; noCount?: boolean }[] = [
   { key: 'inbox', label: 'Inbox', icon: 'inbox' },
@@ -602,6 +603,8 @@ function ThreadView({
   const [showCopies, setShowCopies] = useState(false);
   const [files, setFiles] = useState<Attachment[]>([]);
   const [sending, setSending] = useState(false);
+  const [replyAll, setReplyAll] = useState(false);
+  const [forwarding, setForwarding] = useState(false);
   const [error, setError] = useState('');
   const bottom = useRef<HTMLDivElement>(null);
 
@@ -647,6 +650,7 @@ function ThreadView({
         body: reply,
         cc: cc.trim() || undefined,
         bcc: bcc.trim() || undefined,
+        replyAll,
         attachments: files.length ? files : undefined,
       }),
     }).catch(() => null);
@@ -668,6 +672,35 @@ function ThreadView({
       setError(data?.error ?? data?.message ?? 'Could not send. Try again.');
       await load();
     }
+  }
+
+  /** The whole conversation on paper, which is what a file copy needs. */
+  function print() {
+    if (!thread) return;
+    const messages = thread.messages
+      .map(
+        (m) => `<div class="msg">
+          <p class="who">${escapeHtml(m.fromName || m.fromEmail)}${
+            m.direction === 'OUTBOUND' ? '<span class="tag">Sent</span>' : ''
+          }</p>
+          <p class="addr">${escapeHtml(m.fromEmail)} to ${escapeHtml(m.toEmails.join(', '))}${
+            m.ccEmails.length ? ` &middot; cc ${escapeHtml(m.ccEmails.join(', '))}` : ''
+          } &middot; ${escapeHtml(new Date(m.createdAt).toLocaleString())}</p>
+          <p class="body">${escapeHtml(m.text || '(no text content)')}</p>
+        </div>`,
+      )
+      .join('');
+
+    printDocument(
+      thread.subject,
+      sheetHead('Conversation', thread.mailbox.address) +
+        `<h2 class="subject">${escapeHtml(thread.subject)}</h2>` +
+        `<p class="thread-meta">${escapeHtml(thread.participantName || thread.participant)} &middot; ${
+          thread.messages.length
+        } message${thread.messages.length === 1 ? '' : 's'}</p>` +
+        messages +
+        `<p class="foot">Printed from the school mail portal.</p>`,
+    );
   }
 
   async function remove() {
@@ -712,6 +745,16 @@ function ThreadView({
             active={thread.isStarred}
             onClick={() => patch({ isStarred: !thread.isStarred })}
           />
+          <Tool
+            label="Mark unread"
+            icon="mail"
+            onClick={async () => {
+              await patch({ isRead: false });
+              onClose();
+            }}
+          />
+          <Tool label="Forward" icon="reply" onClick={() => setForwarding(true)} />
+          <Tool label="Print" icon="archive" onClick={print} />
           {thread.state !== 'ARCHIVED' ? (
             <Tool label="Archive" icon="archive" onClick={() => patch({ state: 'ARCHIVED' })} />
           ) : (
@@ -757,6 +800,17 @@ function ThreadView({
         <div ref={bottom} />
       </div>
 
+      {forwarding ? (
+        <ForwardDialog
+          thread={thread}
+          onClose={() => setForwarding(false)}
+          onSent={() => {
+            setForwarding(false);
+            onChanged();
+          }}
+        />
+      ) : null}
+
       <div className="border-t border-line p-3 sm:p-4">
         {thread.canSend === false ? (
           <p className="rounded-xl bg-paper-dark px-4 py-3 text-sm text-ink-soft">
@@ -769,13 +823,24 @@ function ThreadView({
               <label htmlFor="reply" className="text-xs font-semibold text-ink-soft">
                 Reply as {thread.mailbox.address}
               </label>
-              <button
-                type="button"
-                onClick={() => setShowCopies((v) => !v)}
-                className="text-xs font-semibold text-crimson-700 hover:underline"
-              >
-                {showCopies ? 'Hide Cc and Bcc' : 'Cc and Bcc'}
-              </button>
+              <span className="flex items-center gap-3">
+                <label className="flex items-center gap-1.5 text-xs text-ink-soft">
+                  <input
+                    type="checkbox"
+                    checked={replyAll}
+                    onChange={(e) => setReplyAll(e.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-line text-crimson-500"
+                  />
+                  Reply to all
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowCopies((v) => !v)}
+                  className="text-xs font-semibold text-crimson-700 hover:underline"
+                >
+                  {showCopies ? 'Hide Cc and Bcc' : 'Cc and Bcc'}
+                </button>
+              </span>
             </div>
 
             {showCopies ? (
@@ -949,6 +1014,129 @@ function Tool({
     >
       <Icon name={icon} size={18} />
     </button>
+  );
+}
+
+/**
+ * Passes a conversation on to somebody else.
+ *
+ * It opens a new conversation rather than continuing this one, because a
+ * conversation here is filed against the person on the other end of it, and a
+ * forward to the bursar does not belong inside a parent's file.
+ */
+function ForwardDialog({
+  thread,
+  onClose,
+  onSent,
+}: {
+  thread: ThreadDetail;
+  onClose: () => void;
+  onSent: () => void;
+}) {
+  const [to, setTo] = useState('');
+  const [cc, setCc] = useState('');
+  const [note, setNote] = useState('');
+  const [includeAttachments, setIncludeAttachments] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState('');
+
+  const files = thread.messages.flatMap((m) => m.attachments.filter((a) => !a.isInline));
+
+  async function send() {
+    setSending(true);
+    setError('');
+    const res = await fetch(`/api/threads/${thread.id}/forward`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to, cc: cc.trim() || undefined, note, includeAttachments }),
+    }).catch(() => null);
+    const data = res ? await res.json().catch(() => null) : null;
+    setSending(false);
+    if (data?.sent) onSent();
+    else setError(data?.error ?? data?.message ?? 'Could not forward it.');
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-end justify-center bg-ink/40 p-0 sm:items-center sm:p-4">
+      <div className="flex max-h-[92vh] w-full max-w-lg flex-col rounded-t-2xl border border-line bg-paper shadow-xl sm:rounded-2xl">
+        <header className="flex items-center justify-between border-b border-line px-5 py-3">
+          <h2 className="text-base font-semibold text-ink">Forward</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded-lg p-1.5 text-ink-muted hover:bg-paper-dark"
+          >
+            <Icon name="close" size={18} />
+          </button>
+        </header>
+
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
+          <p className="rounded-xl bg-paper-soft px-3 py-2 text-xs text-ink-soft">
+            Sending <strong>{thread.subject}</strong> as {thread.mailbox.address}. The original
+            message is quoted underneath whatever you write.
+          </p>
+
+          <Field label="To">
+            <input
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              placeholder="bursar@example.com"
+              className="w-full rounded-xl border border-line px-3 py-2 text-sm focus:border-crimson-500 focus:outline-none"
+            />
+          </Field>
+          <Field label="Cc">
+            <input
+              value={cc}
+              onChange={(e) => setCc(e.target.value)}
+              className="w-full rounded-xl border border-line px-3 py-2 text-sm focus:border-crimson-500 focus:outline-none"
+            />
+          </Field>
+          <Field label="Add a note" hint="Optional, appears above the forwarded message.">
+            <textarea
+              rows={5}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              className="w-full rounded-xl border border-line px-3 py-2 text-sm focus:border-crimson-500 focus:outline-none"
+            />
+          </Field>
+
+          {files.length ? (
+            <label className="flex items-start gap-2.5 text-sm text-ink">
+              <input
+                type="checkbox"
+                checked={includeAttachments}
+                onChange={(e) => setIncludeAttachments(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-line text-crimson-500"
+              />
+              <span>
+                Include {files.length} attachment{files.length === 1 ? '' : 's'}
+                <span className="block text-xs text-ink-muted">
+                  {files.slice(0, 3).map((f) => f.fileName).join(', ')}
+                  {files.length > 3 ? ` and ${files.length - 3} more` : ''}
+                </span>
+              </span>
+            </label>
+          ) : null}
+
+          {error ? <p className="text-sm text-crimson-700">{error}</p> : null}
+        </div>
+
+        <footer className="flex items-center justify-end gap-2 border-t border-line px-5 py-3">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-ink-muted hover:text-ink">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={send}
+            disabled={sending || !to.trim()}
+            className="inline-flex items-center gap-1.5 rounded-full bg-crimson-500 px-5 py-2 text-sm font-semibold text-white hover:bg-crimson-600 disabled:opacity-50"
+          >
+            <Icon name="send" size={15} /> {sending ? 'Sending' : 'Forward'}
+          </button>
+        </footer>
+      </div>
+    </div>
   );
 }
 

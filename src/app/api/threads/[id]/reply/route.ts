@@ -11,6 +11,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     body?: string;
     cc?: unknown;
     bcc?: unknown;
+    replyAll?: boolean;
     attachments?: unknown;
   };
   const text = typeof body.body === 'string' ? body.body.trim() : '';
@@ -24,6 +25,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     cleanRecipients(body.cc),
     cleanAttachments(body.attachments),
     cleanRecipients(body.bcc),
+    body.replyAll === true,
   );
 
   if (result.error === 'notfound') {

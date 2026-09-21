@@ -5,7 +5,10 @@ import { sendMail, type Attachment } from '@/lib/send';
 
 /** What a caller asks to attach: a file already uploaded, or an outside link. */
 export type OutgoingAttachment =
-  | { attachmentId: string }
+  /** A file this person uploaded, claimed by the message that sends it. */
+  | { attachmentId: string; forwarded?: false }
+  /** A file already sent on another message, carried along by reference. */
+  | { attachmentId: string; forwarded: true }
   | { fileName: string; url: string; mimeType?: string };
 import { htmlToText, snippetOf, subjectKeyOf, type NormalizedMail } from '@/lib/mail-parse';
 import { getFile, putFile } from '@/lib/storage';
@@ -319,11 +322,18 @@ function bodyToHtml(text: string, mailbox: OutboundMailbox, quote?: string | nul
 async function resolveAttachments(
   wanted: OutgoingAttachment[] | undefined,
   userId: string | null,
-): Promise<{ toSend: Attachment[]; claimIds: string[] }> {
-  if (!wanted?.length) return { toSend: [], claimIds: [] };
+): Promise<{
+  toSend: Attachment[];
+  /** Freshly uploaded files, taken over by this message. */
+  claimIds: string[];
+  /** Forwarded files, duplicated as new rows onto the same stored object. */
+  copies: { fileName: string; mimeType: string; sizeBytes: number; storageKey: string }[];
+}> {
+  if (!wanted?.length) return { toSend: [], claimIds: [], copies: [] };
 
   const toSend: Attachment[] = [];
   const claimIds: string[] = [];
+  const copies: { fileName: string; mimeType: string; sizeBytes: number; storageKey: string }[] = [];
 
   for (const item of wanted) {
     if ('url' in item) {
@@ -332,10 +342,24 @@ async function resolveAttachments(
     }
     const row = await db.mailAttachment.findUnique({
       where: { id: item.attachmentId },
-      select: { id: true, fileName: true, mimeType: true, storageKey: true, messageId: true, uploadedById: true },
+      select: {
+        id: true,
+        fileName: true,
+        mimeType: true,
+        sizeBytes: true,
+        storageKey: true,
+        messageId: true,
+        uploadedById: true,
+      },
     });
-    // Only a file this person uploaded and has not already sent.
-    if (!row?.storageKey || row.messageId || (userId && row.uploadedById !== userId)) continue;
+    if (!row?.storageKey) continue;
+
+    // A forward carries a file that already belongs to another message. Access
+    // to the conversation it came from was checked before we got here.
+    if (!item.forwarded) {
+      // Otherwise: only a file this person uploaded and has not already sent.
+      if (row.messageId || (userId && row.uploadedById !== userId)) continue;
+    }
 
     const file = await getFile(row.storageKey);
     if (!file) continue;
@@ -346,9 +370,21 @@ async function resolveAttachments(
       mimeType: row.mimeType,
       content: Buffer.from(file.body).toString('base64'),
     });
-    claimIds.push(row.id);
+
+    if (item.forwarded) {
+      // A second row on the same stored object, so deleting the forward later
+      // cannot take the original's file with it.
+      copies.push({
+        fileName: row.fileName,
+        mimeType: row.mimeType,
+        sizeBytes: row.sizeBytes,
+        storageKey: row.storageKey,
+      });
+    } else {
+      claimIds.push(row.id);
+    }
   }
-  return { toSend, claimIds };
+  return { toSend, claimIds, copies };
 }
 
 async function sendOutbound(opts: {
@@ -371,7 +407,7 @@ async function sendOutbound(opts: {
     .filter((v, i, a) => v && a.indexOf(v) === i)
     .slice(-20);
 
-  const { toSend, claimIds } = await resolveAttachments(opts.attachments, opts.sentById);
+  const { toSend, claimIds, copies } = await resolveAttachments(opts.attachments, opts.sentById);
   const html = bodyToHtml(opts.bodyText, opts.mailbox, opts.quote);
   const headers: Record<string, string> = {};
   if (opts.inReplyTo) headers['In-Reply-To'] = opts.inReplyTo;
@@ -431,12 +467,20 @@ async function sendOutbound(opts: {
 
   // Claimed before the row is read back, or the reply that just went out would
   // report having no attachments while the files sit correctly in storage.
-  let saved = stored;
-  if (claimIds.length) {
-    await db.mailAttachment.updateMany({
-      where: { id: { in: claimIds } },
-      data: { messageId: stored.id },
+  if (copies.length) {
+    await db.mailAttachment.createMany({
+      data: copies.map((c) => ({ ...c, messageId: stored.id, isInline: false })),
     });
+  }
+
+  let saved = stored;
+  if (claimIds.length || copies.length) {
+    if (claimIds.length) {
+      await db.mailAttachment.updateMany({
+        where: { id: { in: claimIds } },
+        data: { messageId: stored.id },
+      });
+    }
     saved =
       (await db.mailMessage.findUnique({
         where: { id: stored.id },
@@ -458,6 +502,28 @@ async function sendOutbound(opts: {
   return { ...result, message: saved };
 }
 
+/**
+ * Everyone who was on a message, minus ourselves.
+ *
+ * Our own addresses are stripped so replying to all never sends the school its
+ * own mail, which would arrive back through the webhook and start a loop.
+ */
+async function othersOn(
+  message: { fromEmail: string; toEmails: string[]; ccEmails: string[] } | undefined,
+  excludeAddress: string,
+): Promise<{ to: string[]; cc: string[] }> {
+  if (!message) return { to: [], cc: [] };
+  const ours = new Set(
+    (await db.mailbox.findMany({ select: { address: true } })).map((m) => m.address.toLowerCase()),
+  );
+  ours.add(excludeAddress.toLowerCase());
+
+  const keep = (list: string[]) =>
+    [...new Set(list.map((e) => e.toLowerCase()))].filter((e) => !ours.has(e));
+
+  return { to: keep([message.fromEmail]), cc: keep([...message.toEmails, ...message.ccEmails]) };
+}
+
 export async function reply(
   threadId: string,
   user: SessionUser,
@@ -466,6 +532,7 @@ export async function reply(
   cc?: string[],
   attachments?: OutgoingAttachment[],
   bcc?: string[],
+  replyAll?: boolean,
 ) {
   const scoped = await threadInScope(threadId, access);
   if (!scoped) return { error: 'notfound' as const };
@@ -484,11 +551,15 @@ export async function reply(
       ).slice(0, 4000)}`
     : null;
 
+  // Reply-all answers everyone who was on the last message, not just whoever
+  // the conversation is filed under.
+  const everyone = replyAll ? await othersOn(last, thread.mailbox.address) : null;
+
   const result = await sendOutbound({
     threadId,
     mailbox: thread.mailbox,
-    to: [thread.participant],
-    cc: cc ?? [],
+    to: everyone?.to.length ? everyone.to : [thread.participant],
+    cc: [...(cc ?? []), ...(everyone?.cc ?? [])].filter((v, i, a) => a.indexOf(v) === i),
     bcc: bcc ?? [],
     subject: /^re:/i.test(thread.subject) ? thread.subject : `Re: ${thread.subject}`,
     bodyText,
@@ -548,6 +619,103 @@ export async function compose(input: {
     attachments: input.attachments,
   });
   return { result: { ...result, threadId: thread.id } };
+}
+
+/**
+ * Passes a conversation on to somebody else.
+ *
+ * It opens a NEW conversation rather than continuing the old one, because a
+ * conversation here is filed against the person on the other end of it. Putting
+ * a forward to the bursar inside a parent's thread would mean the parent's file
+ * contained a message the parent never saw.
+ *
+ * Attachments come along by reference: a second row pointing at the same stored
+ * file, so nothing is uploaded or copied twice, and removing the forward later
+ * cannot take the original's files with it.
+ */
+export async function forward(input: {
+  threadId: string;
+  user: SessionUser;
+  access: MailAccess;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  note: string;
+  includeAttachments?: boolean;
+}) {
+  const scoped = await threadInScope(input.threadId, input.access);
+  if (!scoped) return { error: 'notfound' as const };
+  if (!input.access.canSend(scoped.mailboxId)) return { error: 'readonly' as const };
+  if (!input.to.length) return { error: 'norecipient' as const };
+
+  const source = await db.mailThread.findUnique({
+    where: { id: input.threadId },
+    include: {
+      mailbox: true,
+      messages: {
+        orderBy: { createdAt: 'desc' },
+        take: 1,
+        include: { attachments: true },
+      },
+    },
+  });
+  if (!source) return { error: 'notfound' as const };
+
+  const last = source.messages[0];
+  const quoted = last
+    ? [
+        '---------- Forwarded message ----------',
+        `From: ${last.fromName ? `${last.fromName} <${last.fromEmail}>` : last.fromEmail}`,
+        `Date: ${last.createdAt.toDateString()}`,
+        `Subject: ${last.subject}`,
+        `To: ${last.toEmails.join(', ')}`,
+        '',
+        (last.text ?? htmlToText(last.html)).slice(0, 8000),
+      ].join('\n')
+    : '';
+
+  const subject = /^fwd:/i.test(source.subject) ? source.subject : `Fwd: ${source.subject}`;
+
+  const thread = await db.mailThread.create({
+    data: {
+      mailboxId: source.mailboxId,
+      subject: subject.slice(0, 500),
+      subjectKey: subjectKeyOf(subject),
+      participant: input.to[0].toLowerCase(),
+      snippet: snippetOf(input.note || quoted),
+      isRead: true,
+      messageCount: 0,
+      lastMessageAt: new Date(),
+    },
+  });
+
+  const carried =
+    input.includeAttachments !== false
+      ? (last?.attachments ?? []).filter((a) => !a.isInline && (a.storageKey || a.url))
+      : [];
+
+  const sent = await sendOutbound({
+    threadId: thread.id,
+    mailbox: source.mailbox,
+    to: input.to,
+    cc: input.cc ?? [],
+    bcc: input.bcc ?? [],
+    subject,
+    bodyText: input.note.trim() ? `${input.note.trim()}\n\n${quoted}` : quoted,
+    inReplyTo: null,
+    references: [],
+    sentById: input.user.id,
+    quote: null,
+    // Already-stored files are carried by reference through the same path a
+    // fresh upload takes.
+    attachments: carried.map((a) =>
+      a.storageKey
+        ? { attachmentId: a.id, forwarded: true }
+        : { fileName: a.fileName, url: a.url as string, mimeType: a.mimeType },
+    ),
+  });
+
+  return { result: { ...sent, threadId: thread.id } };
 }
 
 // ── Reading ──────────────────────────────────────────────────────────────────

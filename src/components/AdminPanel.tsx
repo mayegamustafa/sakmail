@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@/components/Icon';
 import { Field } from '@/components/MailClient';
 import { api, initialsOf } from '@/lib/client';
@@ -59,13 +59,112 @@ export function AdminPanel({
           {tab === 'addresses' ? (
             <Addresses mailboxes={mailboxes} onChanged={onChanged} />
           ) : tab === 'staff' ? (
-            <StaffTab onChanged={onChanged} />
+            <StaffTab mailboxes={mailboxes} onChanged={onChanged} />
           ) : (
             <Setup mailboxCount={mailboxes.length} />
           )}
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Uploads a picture that mail clients will load.
+ *
+ * Unlike an attachment this ends up on a public address, because the recipient's
+ * mail app fetches it and cannot sign in. That is why only images are accepted
+ * and only an administrator can put one here.
+ */
+function ImageUpload({
+  label,
+  hint,
+  value,
+  kind,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  value: string;
+  kind: 'avatar' | 'signature';
+  onChange: (url: string) => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function upload(file: File) {
+    setBusy(true);
+    setError('');
+    const form = new FormData();
+    form.append('file', file);
+    form.append('kind', kind);
+    const res = await fetch('/api/brand', { method: 'POST', body: form }).catch(() => null);
+    setBusy(false);
+    if (fileRef.current) fileRef.current.value = '';
+
+    if (res && res.ok) {
+      const data = (await res.json()) as { url: string };
+      onChange(data.url);
+    } else {
+      const data = res ? await res.json().catch(() => null) : null;
+      setError(data?.message ?? 'Could not upload that image.');
+    }
+  }
+
+  return (
+    <Field label={label} hint={hint}>
+      <div className="flex items-start gap-3">
+        {value ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={value}
+            alt=""
+            className={
+              kind === 'avatar'
+                ? 'h-14 w-14 shrink-0 rounded-full border border-line object-cover'
+                : 'h-14 w-auto max-w-[9rem] shrink-0 rounded border border-line object-contain'
+            }
+          />
+        ) : (
+          <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full border border-dashed border-line text-[10px] text-ink-muted">
+            none
+          </span>
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-xs font-medium text-ink-soft hover:border-crimson-300 hover:text-crimson-700 disabled:opacity-50"
+            >
+              <Icon name="plus" size={13} /> {busy ? 'Uploading' : value ? 'Replace' : 'Upload'}
+            </button>
+            {value ? (
+              <button
+                type="button"
+                onClick={() => onChange('')}
+                className="inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-xs font-medium text-ink-muted hover:border-crimson-300 hover:text-crimson-700"
+              >
+                <Icon name="trash" size={13} /> Remove
+              </button>
+            ) : null}
+          </div>
+          {error ? <p className="mt-1.5 text-xs text-crimson-700">{error}</p> : null}
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void upload(f);
+            }}
+          />
+        </div>
+      </div>
+    </Field>
   );
 }
 
@@ -252,14 +351,13 @@ function Addresses({ mailboxes, onChanged }: { mailboxes: Mailbox[]; onChanged: 
               className={inputCls}
             />
           </Field>
-          <Field label="Sender picture" hint="Shown at the top of every message this address sends. Paste an https image URL.">
-            <input
-              value={editing.avatarUrl ?? ''}
-              onChange={(e) => setEditing({ ...editing, avatarUrl: e.target.value })}
-              placeholder="https://"
-              className={inputCls}
-            />
-          </Field>
+          <ImageUpload
+            label="Sender picture"
+            hint="Shown at the top of every message this address sends. Leave it empty to use the schools' badge."
+            kind="avatar"
+            value={editing.avatarUrl ?? ''}
+            onChange={(url) => setEditing({ ...editing, avatarUrl: url })}
+          />
           <Field label="Signature" hint="Added to the bottom of every reply from here">
             <textarea
               rows={3}
@@ -268,6 +366,13 @@ function Addresses({ mailboxes, onChanged }: { mailboxes: Mailbox[]; onChanged: 
               className={inputCls}
             />
           </Field>
+          <ImageUpload
+            label="Signature image"
+            hint="Optional, shown under the signature text. A scanned signature or a sign-off block."
+            kind="signature"
+            value={editing.signatureImageUrl ?? ''}
+            onChange={(url) => setEditing({ ...editing, signatureImageUrl: url })}
+          />
 
           <Toggle
             label="Receive mail for any unmatched address"
@@ -381,11 +486,26 @@ function Addresses({ mailboxes, onChanged }: { mailboxes: Mailbox[]; onChanged: 
 
 // ── Staff ────────────────────────────────────────────────────────────────────
 
-function StaffTab({ onChanged }: { onChanged: () => void }) {
+function StaffTab({ mailboxes, onChanged }: { mailboxes: Mailbox[]; onChanged: () => void }) {
   const [people, setPeople] = useState<StaffAccount[]>([]);
   const [editing, setEditing] = useState<(Partial<StaffAccount> & { password?: string }) | null>(null);
+  // Which addresses this person will have when saved. Held here so a new
+  // account can be created and granted in one go, rather than created and then
+  // hunted for in every address in turn.
+  const [access, setAccess] = useState<{ mailboxId: string; canSend: boolean }[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  function openAccount(person: (Partial<StaffAccount> & { password?: string }) | null) {
+    setEditing(person);
+    setAccess(
+      person?.mailboxAccess?.map((a) => ({
+        mailboxId: a.mailboxId,
+        canSend: a.canSend !== false,
+      })) ?? [],
+    );
+    setError('');
+  }
 
   const load = useCallback(async () => {
     setPeople((await api<StaffAccount[]>('/api/users')) ?? []);
@@ -407,14 +527,29 @@ function StaffTab({ onChanged }: { onChanged: () => void }) {
     }).catch(() => null);
     setSaving(false);
 
-    if (res && res.ok) {
-      setEditing(null);
-      await load();
-      onChanged();
-    } else {
+    if (!res || !res.ok) {
       const data = res ? await res.json().catch(() => null) : null;
       setError(data?.message ?? 'Could not save.');
+      return;
     }
+
+    // A new account has no id until it is saved, so access is written second.
+    const saved = (await res.json()) as { id: string };
+    const accessRes = await fetch(`/api/users/${saved.id}/mailboxes`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mailboxes: access }),
+    }).catch(() => null);
+
+    if (!accessRes || !accessRes.ok) {
+      setError('The account was saved, but its addresses were not. Try that part again.');
+      await load();
+      onChanged();
+      return;
+    }
+    setEditing(null);
+    await load();
+    onChanged();
   }
 
   async function setPassword(person: StaffAccount) {
@@ -453,7 +588,7 @@ function StaffTab({ onChanged }: { onChanged: () => void }) {
         </p>
         <button
           type="button"
-          onClick={() => setEditing({ role: 'STAFF', isActive: true })}
+          onClick={() => openAccount({ role: 'STAFF', isActive: true })}
           className="inline-flex items-center gap-1.5 rounded-full bg-crimson-500 px-4 py-2 text-sm font-semibold text-white hover:bg-crimson-600"
         >
           <Icon name="plus" size={16} /> New account
@@ -477,7 +612,7 @@ function StaffTab({ onChanged }: { onChanged: () => void }) {
               </div>
               <div className="flex shrink-0 gap-0.5">
                 <button
-                  onClick={() => setEditing(p)}
+                  onClick={() => openAccount(p)}
                   aria-label="Edit"
                   className="rounded-lg p-2 text-ink-muted hover:bg-paper-dark hover:text-ink"
                 >
@@ -522,7 +657,7 @@ function StaffTab({ onChanged }: { onChanged: () => void }) {
       {editing ? (
         <Dialog
           title={editing.id ? 'Edit account' : 'New account'}
-          onClose={() => setEditing(null)}
+          onClose={() => openAccount(null)}
           onSave={save}
           saving={saving}
           canSave={Boolean(
@@ -579,6 +714,73 @@ function StaffTab({ onChanged }: { onChanged: () => void }) {
             checked={editing.role === 'ADMIN'}
             onChange={(v) => setEditing({ ...editing, role: v ? 'ADMIN' : 'STAFF' })}
           />
+
+          {editing.role === 'ADMIN' ? (
+            <p className="rounded-xl bg-paper-dark px-3 py-2 text-xs text-ink-soft">
+              An administrator already sees every address, so there is nothing to assign.
+            </p>
+          ) : (
+            <div className="border-t border-line pt-3">
+              <p className="mb-1 text-xs font-semibold text-ink-soft">Addresses they handle</p>
+              <p className="mb-2 text-xs text-ink-muted">
+                They see only what is ticked here, and nothing at all if none is.
+              </p>
+              <div className="max-h-56 space-y-1.5 overflow-y-auto">
+                {mailboxes.length === 0 ? (
+                  <p className="text-xs text-ink-muted">No addresses yet.</p>
+                ) : (
+                  mailboxes.map((m) => {
+                    const grant = access.find((a) => a.mailboxId === m.id);
+                    return (
+                      <div
+                        key={m.id}
+                        className="flex flex-wrap items-center gap-2 rounded-xl border border-line p-2"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={Boolean(grant)}
+                          onChange={(e) =>
+                            setAccess((prev) =>
+                              e.target.checked
+                                ? [...prev, { mailboxId: m.id, canSend: true }]
+                                : prev.filter((a) => a.mailboxId !== m.id),
+                            )
+                          }
+                          aria-label={`Give access to ${m.address}`}
+                          className="h-4 w-4 rounded border-line text-crimson-500"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm text-ink">{m.address}</span>
+                          <span className="block truncate text-xs text-ink-muted">
+                            {m.displayName}
+                          </span>
+                        </span>
+                        {grant ? (
+                          <label className="flex items-center gap-1.5 text-xs text-ink-soft">
+                            <input
+                              type="checkbox"
+                              checked={grant.canSend}
+                              onChange={(e) =>
+                                setAccess((prev) =>
+                                  prev.map((a) =>
+                                    a.mailboxId === m.id
+                                      ? { ...a, canSend: e.target.checked }
+                                      : a,
+                                  ),
+                                )
+                              }
+                              className="h-3.5 w-3.5 rounded border-line text-crimson-500"
+                            />
+                            Can send
+                          </label>
+                        ) : null}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          )}
           {editing.id ? (
             <Toggle
               label="Active"

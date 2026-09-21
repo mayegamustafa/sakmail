@@ -26,6 +26,7 @@ export type Mailbox = {
   isActive: boolean;
   sortOrder: number;
   signature?: string | null;
+  signatureImageUrl?: string | null;
   autoReplyEnabled: boolean;
   autoReplySubject?: string | null;
   autoReplyBody?: string | null;
@@ -111,7 +112,7 @@ export type StaffAccount = Staff & {
   isActive: boolean;
   phone?: string | null;
   lastLoginAt?: string | null;
-  mailboxAccess?: { mailboxId: string }[];
+  mailboxAccess?: { mailboxId: string; canSend?: boolean }[];
 };
 
 /** A file waiting to go out: uploaded to storage, or an outside link. */

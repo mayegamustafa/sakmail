@@ -242,6 +242,7 @@ type OutboundMailbox = {
   address: string;
   displayName: string;
   signature?: string | null;
+  signatureImageUrl?: string | null;
   avatarUrl?: string | null;
 };
 
@@ -291,9 +292,15 @@ function bodyToHtml(text: string, mailbox: OutboundMailbox, quote?: string | nul
     .split(/\n{2,}/)
     .map((p) => `<p style="margin:0 0 12px;">${escapeHtml(p).replace(/\n/g, '<br>')}</p>`)
     .join('');
-  const sig = mailbox.signature?.trim()
+  const sigText = mailbox.signature?.trim()
     ? `<div style="margin-top:18px;color:#6b6b6b;font-size:13px;">${escapeHtml(mailbox.signature).replace(/\n/g, '<br>')}</div>`
     : '';
+  // Width capped and height left to follow, so a large upload cannot stretch the
+  // message open on a phone.
+  const sigImage = mailbox.signatureImageUrl
+    ? `<div style="margin-top:12px;"><img src="${escapeHtml(mailbox.signatureImageUrl)}" alt="" style="max-width:260px;height:auto;display:block;border:0;" /></div>`
+    : '';
+  const sig = sigText + sigImage;
   const quoted = quote?.trim()
     ? `<blockquote style="margin:18px 0 0;padding-left:12px;border-left:2px solid #d9d2d3;color:#6b6b6b;">${escapeHtml(quote).replace(/\n/g, '<br>')}</blockquote>`
     : '';

@@ -50,6 +50,7 @@ export async function POST(req: Request) {
       description: str(body.description, 300),
       avatarUrl: str(body.avatarUrl, 600),
       signature: str(body.signature, 2000),
+      signatureImageUrl: str(body.signatureImageUrl, 600),
       isCatchAll: Boolean(body.isCatchAll),
       isActive: body.isActive !== false,
       sortOrder: Number(body.sortOrder) || 0,

@@ -52,6 +52,7 @@ model User {
   assignedThreads MailThread[]    @relation("Assignee")
   sentMail        MailMessage[]   @relation("Sender")
   uploads         MailAttachment[] @relation("Uploader")
+  brandUploads    BrandAsset[]     @relation("BrandUploader")
 
   @@index([email])
   @@map("users")
@@ -89,6 +90,9 @@ model Mailbox {
   sortOrder   Int     @default(0)
 
   signature        String? @db.Text
+  /// A picture under the signature text, a scanned signature or a departmental
+  /// sign-off block.
+  signatureImageUrl String?
   autoReplyEnabled Boolean @default(false)
   autoReplySubject String?
   autoReplyBody    String? @db.Text
@@ -219,6 +223,25 @@ model MailAttachment {
 
   @@index([messageId])
   @@map("mail_attachments")
+}
+
+/// A picture that has to be fetchable by a mail client: a sender badge or a
+/// signature image. Unlike an attachment these are deliberately public, because
+/// the recipient's mail app loads them and cannot sign in to do it. Nothing
+/// private should ever be uploaded here.
+model BrandAsset {
+  id         String @id @default(cuid())
+  kind       String
+  fileName   String
+  mimeType   String
+  sizeBytes  Int
+  storageKey String
+
+  uploadedById String?
+  uploadedBy   User?   @relation("BrandUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+
+  @@map("brand_assets")
 }
 
 /// Single-row settings, such as the inbound webhook secret.

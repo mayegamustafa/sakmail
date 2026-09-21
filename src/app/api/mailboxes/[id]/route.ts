@@ -31,6 +31,7 @@ export async function PATCH(req: Request, ctx: Ctx) {
       description: str(body.description, 300),
       avatarUrl: str(body.avatarUrl, 600),
       signature: str(body.signature, 2000),
+      signatureImageUrl: str(body.signatureImageUrl, 600),
       ...(typeof body.isCatchAll === 'boolean' ? { isCatchAll: body.isCatchAll } : {}),
       ...(typeof body.isActive === 'boolean' ? { isActive: body.isActive } : {}),
       ...(typeof body.autoReplyEnabled === 'boolean'

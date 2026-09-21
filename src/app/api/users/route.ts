@@ -20,7 +20,7 @@ export async function GET() {
   if (response) return response;
   return Response.json(
     await db.user.findMany({
-      select: { ...PUBLIC, mailboxAccess: { select: { mailboxId: true } } },
+      select: { ...PUBLIC, mailboxAccess: { select: { mailboxId: true, canSend: true } } },
       orderBy: [{ isActive: 'desc' }, { firstName: 'asc' }],
     }),
   );

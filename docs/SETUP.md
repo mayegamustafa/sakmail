@@ -94,31 +94,57 @@ with the reason it did not leave, so nothing anyone types is lost.
 
 ## Attachments
 
-Files are kept on Cloudflare R2: 10GB free, and no charge for reading them back,
-which matters because a mailbox is read far more often than it is written.
+Set up **one** of two providers. Which one is used is decided by whichever
+credentials are present, so moving between them later is a few variables and a
+redeploy. Nothing in the database changes, because each stored file records which
+provider holds it.
 
-In the Cloudflare dashboard, R2, create a bucket. Then Manage API Tokens, create
-one with Object Read and Write on that bucket. Set four variables on the service:
+### Cloudinary, if you would rather not hand over a card
+
+Free plan, no payment method required. Sign up at cloudinary.com, and the
+dashboard shows your Cloud name, API Key and API Secret on the first screen.
 
 ```
-R2_ACCOUNT_ID        from the R2 overview page
-R2_ACCESS_KEY_ID     from the token
-R2_SECRET_ACCESS_KEY from the token
-R2_BUCKET            the bucket name
+CLOUDINARY_CLOUD_NAME
+CLOUDINARY_API_KEY
+CLOUDINARY_API_SECRET
 ```
 
-**Leave the bucket private.** Nothing is served from it directly. Every file goes
-back out through `/api/attachments/<id>`, which checks that the reader may work
-in the address the message belongs to, the same check the conversation itself
-gets. An attachment on a school mailbox is as likely to be a medical form or a
-fee statement as a photograph, and a public bucket URL cannot be taken back once
-it leaks.
+### Cloudflare R2, the better long-term home
 
-Files sent out go inline rather than as a link, which is what lets the bucket
-stay private: the mail provider never needs to reach it.
+Reading files back costs nothing, which matters because a mailbox is read far
+more often than it is written. The free tier is genuinely free, but Cloudflare
+requires a payment method on file before it will enable R2 at all.
 
-Without these variables nothing breaks. Mail still arrives and reads normally,
-and attachments are recorded by name and shown as not stored. An attachment must
+Cloudflare, R2, create a private bucket. Then Manage R2 API Tokens, create one
+with Object Read and Write scoped to that bucket.
+
+```
+R2_ACCOUNT_ID
+R2_ACCESS_KEY_ID
+R2_SECRET_ACCESS_KEY
+R2_BUCKET
+```
+
+**Do not make the bucket public.** If both providers are configured, R2 wins, and
+anything stored on Cloudinary before the switch stays readable.
+
+### How files are protected
+
+Nothing is served from the provider to a browser, on either backend. Every read
+goes out through `/api/attachments/<id>`, which checks the reader may work in the
+address the message belongs to, the same check the conversation itself gets.
+
+On R2 that is a genuinely private bucket: without the credentials there is no way
+in. On Cloudinary the stored address is a capability, held on the server, handed
+to nobody. That is weaker, and it is the price of not needing a card. If the
+files matter enough, move to R2 later.
+
+Files sent out go inline rather than as a link, so the provider never has to be
+reachable by anyone else.
+
+Without either provider nothing breaks. Mail arrives and reads normally, and
+attachments are recorded by name and shown as not stored. An attachment must
 never cost the school the message it came with.
 
 ## How threading works
